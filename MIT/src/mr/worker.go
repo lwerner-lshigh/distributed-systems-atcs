@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"io"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,7 +27,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -36,6 +38,33 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	args := TaskArgs{}
+	reply := TaskReply{}
+
+	call("Coordinator.RegisterMapTask", args, reply)
+
+	file, err := os.Open(reply.File)
+	if err != nil {
+		TaskFailed(reply.File, err)
+		return
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		TaskFailed(reply.File, err)
+		return
+	}
+	kva := mapf(reply.File, string(content))
+	call("Coordinator.FinishedMapTask", FinishArgs{
+		File: reply.File,
+	}, FinishReply{})
+}
+
+func TaskFailed(file string, reason error) {
+	call("Coordinator.TaskFailed", &TaskFailedArgs{
+		File:   file,
+		Reason: reason,
+	}, &TaskFailedReply{})
+	return
 }
 
 //
