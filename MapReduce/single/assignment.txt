@@ -1,0 +1,2 @@
+I was able to get a good portion of map reduce (with out bells and whistles) done.
+So far it does not run because the chunking of data is not working correctly quite yet. 
