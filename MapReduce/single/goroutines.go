@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -18,6 +17,8 @@ func main() {
 		panic("Not enough arguments passed please specify input file")
 	}
 
+	start := time.Now()
+
 	// read the input file
 	f, err := os.Open(os.Args[1])
 	defer f.Close()
@@ -30,36 +31,46 @@ func main() {
 		log.Fatalf("Was unable to read file: %s", err)
 	}
 
+	took := time.Since(start)
+
+	log.Print("[DEBUG] Finished reading; Took ", took)
+
 	// chunking of data
+
+	start = time.Now()
+
 	parts := 4
 	data := string(b)
 
 	chunks := []string{}
 	chunkSize := (len(b) + parts - 1) / parts
 	offset := 0
-	fmt.Println(chunkSize)
+	//fmt.Println(chunkSize)
 	for i := 0; i < len(b)-1; i += chunkSize {
 		if i+chunkSize+offset > len(b) {
-			fmt.Printf("[i=%v] size=%v chunkSize=%v parts=%v SPECIAL CASE! slice[%v:%v]\n", i, len(b), chunkSize, parts, i, i+len(b)-1)
+			log.Printf("[i=%v] size=%v chunkSize=%v parts=%v SPECIAL CASE! slice[%v:%v]\n", i, len(b), chunkSize, parts, i, i+len(b)-1)
 			chunks = append(chunks, data[i+offset:len(b)-1-offset])
 		} else {
 			if unicode.IsSpace(rune(data[i+offset+chunkSize])) {
-				fmt.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
+				log.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
 				chunks = append(chunks, data[i+offset:i+chunkSize+offset])
 			} else {
 				for !unicode.IsSpace(rune(data[i+offset])) { // so that we dont cut off in the middle of a word (in text data)
 					offset++
-					fmt.Printf("Found case of not space: %c\n", data[i+offset])
+					//log.Printf("Found case of not space: %c\n", data[i+offset])
 				}
-				fmt.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
+				log.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
 				chunks = append(chunks, data[i+offset:i+chunkSize+offset])
 			}
 
 		}
 	}
 
-	log.Print("[DEBUG] Finished Chunking")
+	took = time.Since(start)
 
+	log.Print("[DEBUG] Finished chunking; Took ", took)
+
+	start = time.Now()
 	var wg sync.WaitGroup
 	var writeMutex sync.Mutex
 	var intermediateData [][]KeyValue
@@ -77,11 +88,15 @@ func main() {
 	}
 	wg.Wait()
 
-	log.Print("[DEBUG] Finished Map")
+	took = time.Since(start)
+
+	log.Print("[DEBUG] Finished Map; Took ", took)
 
 	//fmt.Println(intermediateData)
 
 	// do a data shuffle
+
+	start = time.Now()
 
 	shuffle := make(map[string][]string)
 
@@ -91,9 +106,13 @@ func main() {
 		}
 	}
 
-	log.Print("[DEBUG] Finished Shuffle")
+	took = time.Since(start)
+
+	log.Print("[DEBUG] Finished shuffle; Took ", took)
 
 	// do a reduce of the keys and values so we get useful results
+
+	start = time.Now()
 
 	results := make(map[string]string)
 
@@ -112,7 +131,11 @@ func main() {
 
 	wg.Wait()
 
-	log.Print("[DEBUG] Finished Reduce")
+	took = time.Since(start)
+
+	log.Print("[DEBUG] Finished reduce; Took ", took)
+
+	start = time.Now()
 
 	b, err = json.MarshalIndent(results, "", "\t")
 	if err != nil {
@@ -129,6 +152,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Encountered error during file writing: %v", err)
 	}
+	took = time.Since(start)
+
+	log.Print("[DEBUG] Finished writing; Took ", took)
+
 }
 
 type KeyValue struct {
