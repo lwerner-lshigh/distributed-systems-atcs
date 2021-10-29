@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -30,15 +31,34 @@ func main() {
 	}
 
 	// chunking of data
-	parts := 3
+	parts := 4
 	data := string(b)
 
 	chunks := []string{}
 	chunkSize := (len(b) + parts - 1) / parts
+	offset := 0
 	fmt.Println(chunkSize)
 	for i := 0; i < len(b)-1; i += chunkSize {
-		chunks = append(chunks, data[i:i+chunkSize])
+		if i+chunkSize+offset > len(b) {
+			fmt.Printf("[i=%v] size=%v chunkSize=%v parts=%v SPECIAL CASE! slice[%v:%v]\n", i, len(b), chunkSize, parts, i, i+len(b)-1)
+			chunks = append(chunks, data[i+offset:len(b)-1-offset])
+		} else {
+			if unicode.IsSpace(rune(data[i+offset+chunkSize])) {
+				fmt.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
+				chunks = append(chunks, data[i+offset:i+chunkSize+offset])
+			} else {
+				for !unicode.IsSpace(rune(data[i+offset])) { // so that we dont cut off in the middle of a word (in text data)
+					offset++
+					fmt.Printf("Found case of not space: %c\n", data[i+offset])
+				}
+				fmt.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
+				chunks = append(chunks, data[i+offset:i+chunkSize+offset])
+			}
+
+		}
 	}
+
+	log.Print("[DEBUG] Finished Chunking")
 
 	var wg sync.WaitGroup
 	var writeMutex sync.Mutex
@@ -57,13 +77,58 @@ func main() {
 	}
 	wg.Wait()
 
-	fmt.Println(intermediateData)
+	log.Print("[DEBUG] Finished Map")
+
+	//fmt.Println(intermediateData)
 
 	// do a data shuffle
 
+	shuffle := make(map[string][]string)
+
+	for _, result := range intermediateData {
+		for _, kv := range result {
+			shuffle[kv.Key] = append(shuffle[kv.Key], kv.Value)
+		}
+	}
+
+	log.Print("[DEBUG] Finished Shuffle")
+
 	// do a reduce of the keys and values so we get useful results
 
+	results := make(map[string]string)
+
+	for key, value := range shuffle {
+		wg.Add(1)
+		go func(key string, value []string) {
+			defer wg.Done()
+			result := Reduce(key, value)
+			writeMutex.Lock()
+			results[key] = result[0]
+			writeMutex.Unlock()
+		}(key, value)
+	}
+
 	// close all jobs
+
+	wg.Wait()
+
+	log.Print("[DEBUG] Finished Reduce")
+
+	b, err = json.MarshalIndent(results, "", "\t")
+	if err != nil {
+		log.Fatalf("Encountered error during marshaling: %v", err)
+	}
+
+	f, err = os.Create("mapreduce-results.out")
+	if err != nil {
+		log.Fatalf("Encountered error during file creation: %v", err)
+	}
+	defer f.Close()
+
+	_, err = f.Write(b)
+	if err != nil {
+		log.Fatalf("Encountered error during file writing: %v", err)
+	}
 }
 
 type KeyValue struct {
