@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -59,23 +60,25 @@ func main() {
 		}
 		rpc.Register(server)
 		rpc.HandleHTTP()
-		l, err := net.Listen("tcp", ":1234")
+		l, err := net.Listen("tcp", "0.0.0.0:1234")
 		if err != nil {
 			log.Fatal("listen error:", err)
 		}
 		log.Println("listening on port 1234")
 
+		//go server.HealthCheckRoutine()
+
 		go func(serv *servers.CoordinatorServer) {
-			//var wg sync.WaitGroup
 			completed := false
 			for {
 				// background proccess start loop
 				time.Sleep(time.Millisecond * 100)
+				// wait until we have the minimum workers available
 				if serv.MinWorkers <= len(serv.Workers) {
 
 					// we have enough workers
 
-					for _, file := range serv.Files {
+					for fileIndex, file := range serv.Files {
 
 						start := time.Now()
 
@@ -121,9 +124,16 @@ func main() {
 
 							}
 						}
-						results := make(chan []servers.KeyValue, len(serv.Workers))
+
+						resultsList := [][]servers.KeyValue{}
+						var mu sync.Mutex
+						var wg sync.WaitGroup
+
+						//results := make(chan []servers.KeyValue, len(serv.Workers))
 						for i, worker := range serv.Workers {
+							wg.Add(1)
 							go func(worker string, data string) {
+								defer wg.Done()
 								client, err := rpc.DialHTTP("tcp", worker)
 								if err != nil {
 									log.Println("dialing:", err)
@@ -137,29 +147,32 @@ func main() {
 								if err != nil {
 									log.Printf("map [%v] exec: %v\n", worker, err)
 								}
-								results <- resp.KVA
+								mu.Lock()
+								resultsList = append(resultsList, resp.KVA)
+								mu.Unlock()
 								log.Printf("[DEBUG] pushing %v results on to the chan\n", worker)
 								client.Close()
 							}(worker, chunks[i])
 						}
-						intermediateData := []servers.KeyValue{}
-						intermediateData = append(intermediateData, <-results...)
+						wg.Wait()
+						//intermediateData := []servers.KeyValue{}
+						//intermediateData = append(intermediateData, <-results...)
 
 						log.Println("[DEBUG] Finished map")
 
 						var writeMutex sync.Mutex
 						shuffle := make(map[string][]string)
-
-						for _, kv := range intermediateData {
-							shuffle[kv.Key] = append(shuffle[kv.Key], kv.Value)
+						for _, intermediateData := range resultsList {
+							for _, kv := range intermediateData {
+								shuffle[kv.Key] = append(shuffle[kv.Key], kv.Value)
+							}
 						}
-
-						reduceResults := []string{}
+						reduceResults := make(map[string]string)
 
 						start = time.Now()
 
 						i := 0
-						var wg sync.WaitGroup
+						//var wg sync.WaitGroup
 						for key, value := range shuffle {
 							wg.Add(1)
 							go func(key string, values []string, worker string) {
@@ -180,8 +193,9 @@ func main() {
 
 								writeMutex.Lock()
 								//log.Printf("[DEBUG] Got results from %v: [%v]%v\n", worker, key, resp.Values)
-								reduceResults = append(reduceResults, key+"\t"+resp.Values[0])
+								reduceResults[key] = resp.Values[0]
 								writeMutex.Unlock()
+								client.Close()
 
 							}(key, value, serv.Workers[i%serv.MinWorkers])
 							i++
@@ -197,7 +211,7 @@ func main() {
 							log.Fatalf("Encountered error during marshaling: %v", err)
 						}
 
-						f, err = os.Create("mapreduce-results.out")
+						f, err = os.Create(fmt.Sprintf("mapreduce-results.%d.out", fileIndex))
 						if err != nil {
 							log.Fatalf("Encountered error during file creation: %v", err)
 						}
@@ -211,8 +225,6 @@ func main() {
 						f.Close()
 						log.Print("[DEBUG] Finished writing; Took ", took)
 
-						completed = true
-
 						for _, worker := range serv.Workers {
 							client, err := rpc.DialHTTP("tcp", worker)
 							if err != nil {
@@ -221,6 +233,7 @@ func main() {
 							client.Call("WorkerServer.Shutdown", nil, nil)
 						}
 					}
+					completed = true
 				}
 				if completed {
 					os.Exit(0)

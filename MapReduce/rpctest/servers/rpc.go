@@ -2,10 +2,12 @@ package servers
 
 import (
 	"log"
+	"net/rpc"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -23,6 +25,38 @@ func (s *CoordinatorServer) Register(addr *string, reply *bool) error {
 	s.workersMutex.Unlock()
 	return nil
 }
+
+func (s *CoordinatorServer) Deregister(addr *string, reply *bool) error {
+	s.workersMutex.Lock()
+	for i, v := range s.Workers {
+		if v == *addr {
+			s.Workers = append(s.Workers[:i], s.Workers[i+1:]...)
+			log.Printf("[DEBUG] Deregistering %v worker\n", *addr)
+			break
+		}
+	}
+	s.workersMutex.Unlock()
+	return nil
+}
+
+func (s *CoordinatorServer) HealthCheckRoutine() {
+	for {
+		time.Sleep(time.Millisecond * 150)
+		for _, worker := range s.Workers {
+			client, err := rpc.DialHTTP("tcp", worker)
+			if err != nil {
+				log.Println("dialing:", err)
+			}
+			err = client.Call("WorkerServer.Ping", nil, nil)
+			if err != nil {
+				log.Println("pinging:", err)
+				s.Deregister(&worker, nil)
+			}
+		}
+	}
+}
+
+// TODO: add register data function to allow a user to send jobs to the server without needing to restart the coordinator
 
 type WorkerServer struct {
 }
@@ -78,5 +112,10 @@ func (w *WorkerServer) Reduce(req *ReduceRPCRequest, resp *ReduceRPCReply) error
 func (w *WorkerServer) Shutdown(req *bool, resp *bool) error {
 	log.Println("[DEBUG] shutdown invoked.")
 	os.Exit(0)
+	return nil
+}
+
+func (w *WorkerServer) Ping(req *bool, resp *bool) error {
+	log.Println("[DEBUG] ping invoked.")
 	return nil
 }
