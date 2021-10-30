@@ -2,6 +2,7 @@ package servers
 
 import (
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,7 +57,6 @@ func (w *WorkerServer) Map(req *MapRPCRequest, resp *MapRPCReply) error {
 	}
 
 	resp.KVA = altKVA
-	log.Println("[DEBUG] map finished.")
 	return nil
 }
 
@@ -70,6 +70,13 @@ type ReduceRPCReply struct {
 }
 
 func (w *WorkerServer) Reduce(req *ReduceRPCRequest, resp *ReduceRPCReply) error {
+	log.Println("[DEBUG] reduce invoked.")
 	resp.Values = []string{strconv.Itoa(len((*req).Values))}
+	return nil
+}
+
+func (w *WorkerServer) Shutdown(req *bool, resp *bool) error {
+	log.Println("[DEBUG] shutdown invoked.")
+	os.Exit(0)
 	return nil
 }

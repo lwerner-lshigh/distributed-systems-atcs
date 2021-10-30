@@ -41,7 +41,7 @@ func main() {
 		if err != nil {
 			log.Fatal("Register:", err)
 		}
-
+		client.Close()
 		log.Println("Listening on", l.Addr().String())
 		http.Serve(l, nil)
 
@@ -145,22 +145,25 @@ func main() {
 						intermediateData := []servers.KeyValue{}
 						intermediateData = append(intermediateData, <-results...)
 
+						log.Println("[DEBUG] Finished map")
+
 						var writeMutex sync.Mutex
 						shuffle := make(map[string][]string)
 
 						for _, kv := range intermediateData {
 							shuffle[kv.Key] = append(shuffle[kv.Key], kv.Value)
 						}
-						var wg sync.WaitGroup
 
-						reduceResults := make(map[string]string)
+						reduceResults := []string{}
+
+						start = time.Now()
 
 						i := 0
+						var wg sync.WaitGroup
 						for key, value := range shuffle {
 							wg.Add(1)
 							go func(key string, values []string, worker string) {
 								defer wg.Done()
-
 								client, err := rpc.DialHTTP("tcp", worker)
 								if err != nil {
 									log.Println("dialing:", err)
@@ -170,20 +173,22 @@ func main() {
 									Key:    key,
 									Values: values,
 								}, resp)
-								log.Printf("[DEBUG] %v reduce finished execution\n", worker)
+								//log.Printf("[DEBUG] %v reduce finished execution\n", worker)
 								if err != nil {
-									log.Printf("map [%v] exec: %v\n", worker, err)
+									log.Printf("reduce [%v] exec: %v\n", worker, err)
 								}
 
 								writeMutex.Lock()
-								reduceResults[key] = resp.Values[0]
+								//log.Printf("[DEBUG] Got results from %v: [%v]%v\n", worker, key, resp.Values)
+								reduceResults = append(reduceResults, key+"\t"+resp.Values[0])
 								writeMutex.Unlock()
+
 							}(key, value, serv.Workers[i%serv.MinWorkers])
 							i++
 						}
 						wg.Wait()
 
-						log.Print("[DEBUG] Finished reduce; Took ", took)
+						log.Println("[DEBUG] Finished reduce; Took: ", time.Since(start))
 
 						start = time.Now()
 
@@ -196,7 +201,6 @@ func main() {
 						if err != nil {
 							log.Fatalf("Encountered error during file creation: %v", err)
 						}
-						defer f.Close()
 
 						_, err = f.Write(b)
 						if err != nil {
@@ -204,13 +208,22 @@ func main() {
 						}
 						took = time.Since(start)
 
+						f.Close()
 						log.Print("[DEBUG] Finished writing; Took ", took)
 
 						completed = true
+
+						for _, worker := range serv.Workers {
+							client, err := rpc.DialHTTP("tcp", worker)
+							if err != nil {
+								log.Println("dialing:", err)
+							}
+							client.Call("WorkerServer.Shutdown", nil, nil)
+						}
 					}
 				}
 				if completed {
-					break
+					os.Exit(0)
 				}
 			}
 		}(server)
