@@ -1,6 +1,7 @@
 package servers
 
 import (
+	"errors"
 	"log"
 	"net/rpc"
 	"os"
@@ -10,6 +11,10 @@ import (
 	"time"
 	"unicode"
 )
+
+type PingResponse struct {
+	Message string
+}
 
 type CoordinatorServer struct {
 	workersMutex sync.Mutex
@@ -26,39 +31,62 @@ func (s *CoordinatorServer) Register(addr *string, reply *bool) error {
 	return nil
 }
 
-func (s *CoordinatorServer) Deregister(addr *string, reply *bool) error {
+func (s *CoordinatorServer) deregister(addr *string) error {
 	s.workersMutex.Lock()
-	for i, v := range s.Workers {
-		if v == *addr {
-			s.Workers = append(s.Workers[:i], s.Workers[i+1:]...)
-			log.Printf("[DEBUG] Deregistering %v worker\n", *addr)
-			break
-		}
+	log.Printf("[DEBUG] Deregistering %v worker\n", *addr)
+	i := indexOf(*addr, s.Workers)
+	log.Printf("[DEBUG] Index of %v is %v\n", *addr, i)
+	if i == -1 {
+		return errors.New("worker not found")
 	}
+	s.Workers = remove(s.Workers, i)
+	log.Printf("[DEBUG] Workers after deregistration: %v\n", s.Workers)
 	s.workersMutex.Unlock()
 	return nil
 }
 
 func (s *CoordinatorServer) HealthCheckRoutine() {
 	for {
-		time.Sleep(time.Millisecond * 150)
+		time.Sleep(time.Second * 1)
 		for _, worker := range s.Workers {
-			client, err := rpc.DialHTTP("tcp", worker)
-			if err != nil {
-				log.Println("dialing:", err)
-			}
-			err = client.Call("WorkerServer.Ping", nil, nil)
-			if err != nil {
-				log.Println("pinging:", err)
-				s.Deregister(&worker, nil)
-			}
+			func(worker string) {
+				// recover from panic
+				defer func() {
+					if r := recover(); r != nil {
+						log.Println("[ERROR] Coordinator server health check routine failed:", r)
+					}
+				}()
+
+				client, err := rpc.DialHTTP("tcp", worker)
+				if err != nil {
+					log.Println("dialing:", err)
+					s.deregister(&worker)
+					return
+				}
+				defer client.Close()
+				resp := &PingResponse{}
+				err = client.Call("WorkerServer.Ping", "PING", resp)
+				if err != nil {
+					log.Println("pinging:", err)
+					s.deregister(&worker)
+					return
+				}
+
+			}(worker)
 		}
 	}
+}
+
+func (s *CoordinatorServer) Ping(req string, resp *PingResponse) error {
+	resp.Message = "pong"
+	return nil
 }
 
 // TODO: add register data function to allow a user to send jobs to the server without needing to restart the coordinator
 
 type WorkerServer struct {
+	CoordinatorServer string
+	ListenAddr        string
 }
 
 type KeyValue struct {
@@ -115,7 +143,51 @@ func (w *WorkerServer) Shutdown(req *bool, resp *bool) error {
 	return nil
 }
 
-func (w *WorkerServer) Ping(req *bool, resp *bool) error {
-	log.Println("[DEBUG] ping invoked.")
+func (w *WorkerServer) Ping(req string, resp *PingResponse) error {
+	resp.Message = "pong"
 	return nil
+}
+
+func (w *WorkerServer) HealthCheckRoutine() {
+	notHealthy := true
+	for {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Println("[ERROR] Worker server health check routine failed:", r)
+				}
+			}()
+			client, err := rpc.DialHTTP("tcp", w.CoordinatorServer)
+			if err != nil {
+				//log.Println("dialing:", err)
+				notHealthy = true
+				return
+			}
+			defer client.Close()
+			if notHealthy {
+				err = client.Call("CoordinatorServer.Register", &w.ListenAddr, nil)
+				if err != nil {
+					log.Println("registering:", err)
+					return
+				}
+				notHealthy = false
+				log.Printf("[DEBUG] Worker %v registered with coordinator %s\n", w.ListenAddr, w.CoordinatorServer)
+			}
+			time.Sleep(time.Second * 2)
+		}()
+	}
+}
+
+func remove(s []string, i int) []string {
+	s[i] = s[len(s)-1]
+	return s[:len(s)-1]
+}
+
+func indexOf(element string, data []string) int {
+	for k, v := range data {
+		if element == v {
+			return k
+		}
+	}
+	return -1 //not found.
 }

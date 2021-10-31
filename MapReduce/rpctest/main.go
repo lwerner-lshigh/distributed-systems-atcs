@@ -33,16 +33,11 @@ func main() {
 		if err != nil {
 			log.Fatal("listen error:", err)
 		}
+		clientServer.ListenAddr = l.Addr().String()
+		clientServer.CoordinatorServer = os.Args[2]
 
-		client, err := rpc.DialHTTP("tcp", "localhost:1234")
-		if err != nil {
-			log.Fatal("dialing: ", err)
-		}
-		err = client.Call("CoordinatorServer.Register", l.Addr().String(), nil)
-		if err != nil {
-			log.Fatal("Register:", err)
-		}
-		client.Close()
+		go clientServer.HealthCheckRoutine()
+
 		log.Println("Listening on", l.Addr().String())
 		http.Serve(l, nil)
 
@@ -66,7 +61,7 @@ func main() {
 		}
 		log.Println("listening on port 1234")
 
-		//go server.HealthCheckRoutine()
+		go server.HealthCheckRoutine()
 
 		go func(serv *servers.CoordinatorServer) {
 			completed := false
