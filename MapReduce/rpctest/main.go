@@ -10,6 +10,7 @@ import (
 	"net/rpc"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
@@ -29,16 +30,17 @@ func main() {
 		clientServer := new(servers.WorkerServer)
 		rpc.Register(clientServer)
 		rpc.HandleHTTP()
-		l, err := net.Listen("tcp", ":0")
+		l, err := net.Listen("tcp", "0.0.0.0:0")
 		if err != nil {
 			log.Fatal("listen error:", err)
 		}
-		clientServer.ListenAddr = l.Addr().String()
+		addrSplit := strings.Split(l.Addr().String(), ":")
+		clientServer.ListenAddr = os.Args[3] + ":" + addrSplit[len(addrSplit)-1]
 		clientServer.CoordinatorServer = os.Args[2]
 
 		go clientServer.HealthCheckRoutine()
 
-		log.Println("Listening on", l.Addr().String())
+		log.Println("Listening on", clientServer.ListenAddr)
 		http.Serve(l, nil)
 
 	}
@@ -97,23 +99,24 @@ func main() {
 						data := string(b)
 
 						chunks := []string{}
-						chunkSize := (len(b) + parts - 1) / parts
+						chunkSize := (len(data) + parts - 1) / parts
 						offset := 0
+						log.Printf("[DEBUG] Chunk size: %d", chunkSize)
 						//fmt.Println(chunkSize)
-						for i := 0; i < len(b)-1; i += chunkSize {
-							if i+chunkSize+offset > len(b) {
-								log.Printf("[i=%v] size=%v chunkSize=%v parts=%v SPECIAL END CASE! slice[%v:%v]\n", i, len(b), chunkSize, parts, i, i+len(b)-1)
-								chunks = append(chunks, data[i+offset:len(b)-1-offset])
+						for i := 0; i < len(data); i += chunkSize {
+							if i+chunkSize+offset > len(data) {
+								log.Printf("[i=%v] size=%v chunkSize=%v parts=%v SPECIAL END CASE! slice[%v:%v]\n", i, len(data), chunkSize, parts, i, i+len(data)-1)
+								chunks = append(chunks, data[i+offset:len(data)-1-offset])
 							} else {
 								if unicode.IsSpace(rune(data[i+offset+chunkSize])) {
-									log.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
+									log.Printf("[i=%v] size=%v chunkSize=%v parts=%v [not space case]\n", i, len(data), chunkSize, parts)
 									chunks = append(chunks, data[i+offset:i+chunkSize+offset])
 								} else {
 									for !unicode.IsSpace(rune(data[i+offset])) { // so that we dont cut off in the middle of a word (in text data)
 										offset++
-										//log.Printf("Found case of not space: %c\n", data[i+offset])
+										log.Printf("Found case of not space: %c\n", data[i+offset])
 									}
-									log.Printf("[i=%v] size=%v chunkSize=%v parts=%v\n", i, len(b), chunkSize, parts)
+									log.Printf("[i=%v] size=%v chunkSize=%v parts=%v offset=%v\n", i, len(data), chunkSize, parts, offset)
 									chunks = append(chunks, data[i+offset:i+chunkSize+offset])
 								}
 

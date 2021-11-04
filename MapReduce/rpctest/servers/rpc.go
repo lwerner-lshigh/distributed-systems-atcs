@@ -21,12 +21,19 @@ type CoordinatorServer struct {
 	Workers      []string
 	Files        []string
 	MinWorkers   int
+	//HTTPWorkers  map[string]*rpc.Client
 }
 
 func (s *CoordinatorServer) Register(addr *string, reply *bool) error {
 	s.workersMutex.Lock()
 	s.Workers = append(s.Workers, *addr)
 	log.Printf("[DEBUG] Registering %v worker\n", *addr)
+	//client, err := rpc.DialHTTP("tcp", *addr)
+	//if err != nil {
+	//  log.Println("register dialing:", err)
+	//	return err
+	//}
+	//s.HTTPWorkers[*addr] = client
 	s.workersMutex.Unlock()
 	return nil
 }
@@ -41,6 +48,7 @@ func (s *CoordinatorServer) deregister(addr *string) error {
 	}
 	s.Workers = remove(s.Workers, i)
 	log.Printf("[DEBUG] Workers after deregistration: %v\n", s.Workers)
+	//delete(s.HTTPWorkers, *addr)
 	s.workersMutex.Unlock()
 	return nil
 }
@@ -52,13 +60,15 @@ func (s *CoordinatorServer) HealthCheckRoutine() {
 			func(worker string) {
 				// recover from panic
 				defer func() {
+					// make sure that we are not crashing ever
 					if r := recover(); r != nil {
 						log.Println("[ERROR] Coordinator server health check routine failed:", r)
 					}
 				}()
-
+				// Make sure our friend is still alive
 				client, err := rpc.DialHTTP("tcp", worker)
 				if err != nil {
+					// oh no they are dead! time to forget them
 					log.Println("dialing:", err)
 					s.deregister(&worker)
 					return
@@ -66,7 +76,9 @@ func (s *CoordinatorServer) HealthCheckRoutine() {
 				defer client.Close()
 				resp := &PingResponse{}
 				err = client.Call("WorkerServer.Ping", "PING", resp)
+				// Now say Hi!
 				if err != nil {
+					// what?! they are dead now?! time to forget them here too
 					log.Println("pinging:", err)
 					s.deregister(&worker)
 					return
