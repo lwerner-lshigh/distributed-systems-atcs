@@ -39,7 +39,7 @@ func main() {
 
 	start = time.Now()
 
-	parts := 4
+	parts := 2
 	data := string(b)
 
 	chunks := []string{}
@@ -175,8 +175,6 @@ func Map(key string, value string) []KeyValue {
 		kv := KeyValue{Key: w, Value: "1"}
 		kva = append(kva, kv)
 	}
-
-	time.Sleep(2 * time.Second)
 	return kva
 }
 
