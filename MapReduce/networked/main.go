@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -35,7 +36,7 @@ func main() {
 			log.Fatal("listen error:", err)
 		}
 		addrSplit := strings.Split(l.Addr().String(), ":")
-		clientServer.ListenAddr = os.Args[3] + ":" + addrSplit[len(addrSplit)-1]
+		clientServer.ListenAddr = getIPAddress() + ":" + addrSplit[len(addrSplit)-1]
 		clientServer.CoordinatorServer = os.Args[2]
 
 		go clientServer.HealthCheckRoutine()
@@ -114,7 +115,7 @@ func main() {
 								} else {
 									for !unicode.IsSpace(rune(data[i+offset])) { // so that we dont cut off in the middle of a word (in text data)
 										offset++
-										log.Printf("Found case of not space: %c\n", data[i+offset])
+										log.Printf("Found case of not space: %q\n", data[i+offset])
 									}
 									log.Printf("[i=%v] size=%v chunkSize=%v parts=%v offset=%v\n", i, len(data), chunkSize, parts, offset)
 									chunks = append(chunks, data[i+offset:i+chunkSize+offset])
@@ -126,35 +127,25 @@ func main() {
 						resultsList := [][]servers.KeyValue{}
 						var mu sync.Mutex
 						var wg sync.WaitGroup
+						mapFailures := make(chan servers.WorkerError)
 
 						//results := make(chan []servers.KeyValue, len(serv.Workers))
 						for i, worker := range serv.Workers {
 							wg.Add(1)
-							go func(worker string, data string) {
-								defer wg.Done()
-								client, err := rpc.DialHTTP("tcp", worker)
-								if err != nil {
-									log.Println("dialing:", err)
-								}
-								resp := &servers.MapRPCReply{}
-								err = client.Call("WorkerServer.Map", &servers.MapRPCRequest{
-									Key:   file,
-									Value: data,
-								}, resp)
-								log.Printf("[DEBUG] %v map finished execution\n", worker)
-								if err != nil {
-									log.Printf("map [%v] exec: %v\n", worker, err)
-								}
-								mu.Lock()
-								resultsList = append(resultsList, resp.KVA)
-								mu.Unlock()
-								log.Printf("[DEBUG] pushing %v results on to the chan\n", worker)
-								client.Close()
-							}(worker, chunks[i])
+							go servers.PreformMap(&wg, &mu, &resultsList, worker, i, file, chunks[i], mapFailures)
 						}
-						wg.Wait()
-						//intermediateData := []servers.KeyValue{}
-						//intermediateData = append(intermediateData, <-results...)
+						go func() {
+							wg.Wait()
+							close(mapFailures)
+						}()
+
+						for workErr := range mapFailures {
+							wg.Add(1)
+							// pick random worker to exec on
+							worker := serv.Workers[rand.Intn(len(serv.Workers))]
+							serv.Deregister(&workErr.Worker)
+							go servers.PreformMap(&wg, &mu, &resultsList, worker, workErr.SelectedSlice, file, chunks[workErr.SelectedSlice], mapFailures)
+						}
 
 						log.Println("[DEBUG] Finished map")
 
@@ -165,40 +156,38 @@ func main() {
 								shuffle[kv.Key] = append(shuffle[kv.Key], kv.Value)
 							}
 						}
+						log.Println("[DEBUG] Finished shuffle")
+
 						reduceResults := make(map[string]string)
 
 						start = time.Now()
 
 						i := 0
-						//var wg sync.WaitGroup
+						guard := make(chan bool, len(serv.Workers)*10)
+						// guard channel to make sure we dont go over the limit
+						// also will only run at most 2 rpc requests on each worker at a time
+						reduceFailures := make(chan servers.WorkerError)
+
 						for key, value := range shuffle {
 							wg.Add(1)
-							go func(key string, values []string, worker string) {
-								defer wg.Done()
-								client, err := rpc.DialHTTP("tcp", worker)
-								if err != nil {
-									log.Println("dialing:", err)
-								}
-								resp := &servers.ReduceRPCReply{}
-								err = client.Call("WorkerServer.Reduce", &servers.ReduceRPCRequest{
-									Key:    key,
-									Values: values,
-								}, resp)
-								//log.Printf("[DEBUG] %v reduce finished execution\n", worker)
-								if err != nil {
-									log.Printf("reduce [%v] exec: %v\n", worker, err)
-								}
-
-								writeMutex.Lock()
-								//log.Printf("[DEBUG] Got results from %v: [%v]%v\n", worker, key, resp.Values)
-								reduceResults[key] = resp.Values[0]
-								writeMutex.Unlock()
-								client.Close()
-
-							}(key, value, serv.Workers[i%serv.MinWorkers])
+							guard <- true
+							go servers.PreformReduce(&wg, &writeMutex, guard, key, value, reduceResults, serv.Workers[i%len(serv.Workers)], i, reduceFailures)
 							i++
 						}
-						wg.Wait()
+						log.Println("[DEBUG] Finished submitting reduces")
+						go func() {
+							wg.Wait()
+							close(reduceFailures)
+						}()
+						for workErr := range reduceFailures {
+							wg.Add(1)
+							// pick next worker to exec on
+							worker := serv.Workers[(workErr.SelectedSlice+1)%len(serv.Workers)]
+							serv.Deregister(&workErr.Worker)
+							guard <- true
+							log.Printf("[FailureRecovery] saving from %s by running on %s", workErr.Worker, worker)
+							go servers.PreformReduce(&wg, &writeMutex, guard, workErr.Key, shuffle[workErr.Key], reduceResults, worker, workErr.SelectedSlice, reduceFailures)
+						}
 
 						log.Println("[DEBUG] Finished reduce; Took: ", time.Since(start))
 
@@ -223,13 +212,6 @@ func main() {
 						f.Close()
 						log.Print("[DEBUG] Finished writing; Took ", took)
 
-						for _, worker := range serv.Workers {
-							client, err := rpc.DialHTTP("tcp", worker)
-							if err != nil {
-								log.Println("dialing:", err)
-							}
-							client.Call("WorkerServer.Shutdown", nil, nil)
-						}
 					}
 					completed = true
 				}
@@ -242,4 +224,15 @@ func main() {
 		http.Serve(l, nil)
 	}
 
+}
+
+func getIPAddress() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	// handle err...
+	if err != nil {
+		return "127.0.0.1"
+	}
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
 }

@@ -38,7 +38,7 @@ func (s *CoordinatorServer) Register(addr *string, reply *bool) error {
 	return nil
 }
 
-func (s *CoordinatorServer) deregister(addr *string) error {
+func (s *CoordinatorServer) Deregister(addr *string) error {
 	s.workersMutex.Lock()
 	log.Printf("[DEBUG] Deregistering %v worker\n", *addr)
 	i := indexOf(*addr, s.Workers)
@@ -51,6 +51,13 @@ func (s *CoordinatorServer) deregister(addr *string) error {
 	//delete(s.HTTPWorkers, *addr)
 	s.workersMutex.Unlock()
 	return nil
+}
+
+func (s *CoordinatorServer) GetWorker(i int) string {
+	s.workersMutex.Lock()
+	val := s.Workers[i]
+	s.workersMutex.Unlock()
+	return val
 }
 
 func (s *CoordinatorServer) HealthCheckRoutine() {
@@ -69,8 +76,8 @@ func (s *CoordinatorServer) HealthCheckRoutine() {
 				client, err := rpc.DialHTTP("tcp", worker)
 				if err != nil {
 					// oh no they are dead! time to forget them
-					log.Println("dialing:", err)
-					s.deregister(&worker)
+					log.Println("[HEALTH] dialing:", err)
+					s.Deregister(&worker)
 					return
 				}
 				defer client.Close()
@@ -79,8 +86,8 @@ func (s *CoordinatorServer) HealthCheckRoutine() {
 				// Now say Hi!
 				if err != nil {
 					// what?! they are dead now?! time to forget them here too
-					log.Println("pinging:", err)
-					s.deregister(&worker)
+					log.Println("[HEALTH] pinging:", err)
+					s.Deregister(&worker)
 					return
 				}
 
