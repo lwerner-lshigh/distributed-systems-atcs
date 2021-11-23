@@ -142,8 +142,8 @@ func main() {
 						for workErr := range mapFailures {
 							wg.Add(1)
 							// pick random worker to exec on
-							worker := serv.Workers[rand.Intn(len(serv.Workers))]
 							serv.Deregister(&workErr.Worker)
+							worker := serv.Workers[rand.Intn(len(serv.Workers))]
 							go servers.PreformMap(&wg, &mu, &resultsList, worker, workErr.SelectedSlice, file, chunks[workErr.SelectedSlice], mapFailures)
 						}
 
