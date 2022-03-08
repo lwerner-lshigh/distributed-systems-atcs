@@ -16,15 +16,17 @@ var database map[string]string
 var replicasMu sync.Mutex
 var replicas []string
 var ipAddr string
+var port = "6666"
 
 func main() {
 	ipAddr = getIPAddress()
 	database = make(map[string]string)
-	listener, err := net.Listen("tcp", "0.0.0.0:6789")
+	listener, err := net.Listen("tcp", "0.0.0.0:"+port)
+	replicas = []string{ipAddr + ":" + port}
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Listening on 6789 for DB")
+	fmt.Printf("Listening on %s for DB\n", port)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -48,7 +50,7 @@ func getIPAddress() string {
 func handleTCPConn(c net.Conn) {
 	defer c.Close()
 	input := bufio.NewScanner(c)
-	fmt.Fprintf(c, "OK. REPLICAS: %v\n", replicas)
+	//fmt.Fprintf(c, "OK. REPLICAS: %v\n", replicas)
 	for input.Scan() {
 		// command sent (each line is a command)
 		command := input.Text()
@@ -152,6 +154,7 @@ func handleTCPConn(c net.Conn) {
 					break
 				}
 				JoinServer(parts[1], c)
+				fmt.Fprintf(c, "OK\n")
 
 			case "REGISTER":
 				if len(parts) != 2 {
@@ -163,6 +166,11 @@ func handleTCPConn(c net.Conn) {
 				active := replicas
 				replicasMu.Unlock()
 				fmt.Fprintf(c, "%v\n", active)
+			case "REPLICAS":
+				replicasMu.Lock()
+				active := replicas
+				replicasMu.Unlock()
+				fmt.Fprintf(c, "%v\n", active)
 			}
 		}
 
@@ -170,25 +178,29 @@ func handleTCPConn(c net.Conn) {
 }
 
 func JoinServer(server string, c io.Writer) {
+	fmt.Printf("connecting to %s\n", server)
 	conn, err := net.Dial("tcp", server)
 	if err != nil {
-		fmt.Fprintf(c, "ERROR: %v\n", err)
+		fmt.Fprintf(c, "dial error: %v\n", err)
 		return
 	}
-	conn.Write([]byte("PING"))
+	defer conn.Close()
+	conn.Write([]byte("PING\n"))
 	joinScan := bufio.NewScanner(conn)
+	joinScan.Scan()
 	resp := joinScan.Text()
-	fmt.Println(resp)
 	if resp != "PONG" {
 		fmt.Fprintf(c, "ERROR: not expected ping response\n")
 		return
 	}
-	conn.Write([]byte(fmt.Sprintf("REGISTER %v", ipAddr)))
+	conn.Write([]byte(fmt.Sprintf("REGISTER %v\n", ipAddr+":"+port)))
+	joinScan.Scan()
 	resp = joinScan.Text()
+	resp = strings.ReplaceAll(resp, "[", "")
+	resp = strings.ReplaceAll(resp, "]", "")
 	replicasMu.Lock()
 	replicas = append(replicas, strings.Fields(resp)...)
 	replicasMu.Unlock()
-
 }
 
 func AtomicSetDB(key, value string) bool {
